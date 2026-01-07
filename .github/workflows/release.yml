@@ -1,0 +1,203 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Linux
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            artifact_name: crx
+            asset_name: crx-linux-amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            artifact_name: crx
+            asset_name: crx-linux-arm64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: 386
+            artifact_name: crx
+            asset_name: crx-linux-386
+          
+          # macOS
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            artifact_name: crx
+            asset_name: crx-macos-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            artifact_name: crx
+            asset_name: crx-macos-arm64
+          
+          # Windows
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            artifact_name: crx.exe
+            asset_name: crx-windows-amd64.exe
+          - os: windows-latest
+            goos: windows
+            goarch: 386
+            artifact_name: crx.exe
+            asset_name: crx-windows-386.exe
+          - os: windows-latest
+            goos: windows
+            goarch: arm64
+            artifact_name: crx.exe
+            asset_name: crx-windows-arm64.exe
+          
+          # FreeBSD
+          - os: ubuntu-latest
+            goos: freebsd
+            goarch: amd64
+            artifact_name: crx
+            asset_name: crx-freebsd-amd64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w" -o ${{ matrix.artifact_name }} .
+
+      - name: Compress binary (Unix)
+        if: matrix.goos != 'windows'
+        run: |
+          tar -czf ${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
+          sha256sum ${{ matrix.asset_name }}.tar.gz > ${{ matrix.asset_name }}.tar.gz.sha256
+
+      - name: Compress binary (Windows)
+        if: matrix.goos == 'windows'
+        run: |
+          7z a ${{ matrix.asset_name }}.zip ${{ matrix.artifact_name }}
+          certutil -hashfile ${{ matrix.asset_name }}.zip SHA256 > ${{ matrix.asset_name }}.zip.sha256
+
+      - name: Upload artifacts (Unix)
+        if: matrix.goos != 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: |
+            ${{ matrix.asset_name }}.tar.gz
+            ${{ matrix.asset_name }}.tar.gz.sha256
+
+      - name: Upload artifacts (Windows)
+        if: matrix.goos == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: |
+            ${{ matrix.asset_name }}.zip
+            ${{ matrix.asset_name }}.zip.sha256
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f -exec mv {} release-assets/ \;
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          cat > RELEASE_NOTES.md << 'EOF'
+          # Corazon ${VERSION}
+          
+          Browser extension packaging tool for cross-platform development.
+          
+          ## Installation
+          
+          Download the appropriate binary for your platform below and add it to your PATH.
+          
+          ### Linux/macOS
+          ```bash
+          # Extract the archive
+          tar -xzf crx-*.tar.gz
+          
+          # Move to a directory in your PATH
+          sudo mv crx /usr/local/bin/
+          
+          # Make executable (if needed)
+          chmod +x /usr/local/bin/crx
+          ```
+          
+          ### Windows
+          ```powershell
+          # Extract the zip file
+          # Add the directory to your PATH or move crx.exe to an existing PATH location
+          ```
+          
+          ## Usage
+          
+          ```bash
+          # Package extension with ignore rules
+          crx <source_dir> <output_file>
+          
+          # Package everything (ignore all .gitignore/.zignore)
+          crx -a <source_dir> <output_file>
+          
+          # Show version
+          crx -v
+          ```
+          
+          ## Checksums
+          
+          SHA256 checksums are provided for each binary to verify integrity.
+          
+          ## Supported Platforms
+          
+          - Linux (amd64, arm64, 386)
+          - macOS (amd64, arm64)
+          - Windows (amd64, arm64, 386)
+          - FreeBSD (amd64)
+          EOF
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: true
+          prerelease: false
+          name: Release ${{ steps.release_notes.outputs.VERSION }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
